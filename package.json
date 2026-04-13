@@ -1,11 +1,13 @@
 {
   "name": "obsidian-getnote-sync",
-  "version": "0.1.1",
+  "version": "1.0.0",
   "description": "Obsidian plugin for importing Get Note transcripts into a vault.",
   "main": "main.js",
   "scripts": {
     "build": "node esbuild.config.mjs production",
-    "dev": "node esbuild.config.mjs"
+    "dev": "node esbuild.config.mjs",
+    "issue-license": "node scripts/issue-license.mjs",
+    "license-tool": "node scripts/license-tool.mjs"
   },
   "keywords": [
     "obsidian",

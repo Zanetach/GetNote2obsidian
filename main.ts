@@ -71,14 +71,47 @@ interface RenderContext {
   topicTags?: string[];
 }
 
+interface LicenseState {
+  deviceId: string;
+  rawLicense: string | null;
+  isValid: boolean;
+  statusText: string;
+  expiresAt: string | null;
+}
+
+interface SignedLicensePayload {
+  deviceId?: string;
+  deviceIds?: string[];
+  exp: string;
+  customer?: string;
+  unlimitedDevices?: boolean;
+}
+
+const DEVICE_ID_SECRET_ID = "getnote-sync-device-id";
+const LICENSE_SECRET_ID = "getnote-sync-license";
+const LICENSE_PREFIX = "gns1";
+const LEGACY_LICENSE_SALT = "getnote-sync-local-license-v1";
+const LEGACY_LICENSE_CHECKSUM_LENGTH = 24;
+const LICENSE_PUBLIC_KEY_PEM = `-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAv72AJyy7bY1jLRKznwH9
+J67zCLYWyO+o323QZ2gpUvbPtrcbpgsSealUOkAGR3wEr4QQDqdXMF1QO/2trOzn
+Ju9doRms2lasGkZuRJJzb8jKcgvOcWwSr05s3TSc609E4ij7906OG86xbFTHTPxi
+XgQwf/5HRD9xz4JJUsoqvmz4lAwMzPYyu8UT0Gv8Ncz1u1xTckfdD3tnzMOwep/d
+j1BuYjSKXVzRONkuwFL7ac36WpbV/re6BbxjV9jk58BQwsu+jmHIX5laTsc771aC
+RvuLit6sAzAKmiODR04aqujPcQOieCNz9lFz5xUZ9Ch8Lh3DGGeUbSvsP3s3eIfP
+PQIDAQAB
+-----END PUBLIC KEY-----`;
+
 export default class GetNoteSyncPlugin extends Plugin {
   settings: GetNoteSyncSettings;
   private syncTimer: number | null = null;
   private isSyncing = false;
   private detailCache = new Map<string, JsonRecord | null>();
+  private licenseState: LicenseState | null = null;
 
   async onload() {
     await this.loadSettings();
+    await this.refreshLicenseState();
 
     this.addCommand({
       id: "sync-getnote-now",
@@ -166,6 +199,10 @@ export default class GetNoteSyncPlugin extends Plugin {
   }
 
   async runSync(showNotice: boolean) {
+    if (!(await this.ensureLicensed(showNotice))) {
+      return;
+    }
+
     if (this.isSyncing) {
       if (showNotice) {
         new Notice("GetNote Sync is already running.");
@@ -235,6 +272,10 @@ export default class GetNoteSyncPlugin extends Plugin {
   }
 
   async refreshImportedNotes(showNotice: boolean) {
+    if (!(await this.ensureLicensed(showNotice))) {
+      return;
+    }
+
     if (this.isSyncing) {
       if (showNotice) {
         new Notice("GetNote Sync is already running.");
@@ -873,6 +914,56 @@ export default class GetNoteSyncPlugin extends Plugin {
     return this.settings.noteFingerprints[noteId] === computeNoteFingerprint(note);
   }
 
+  async getLicenseState(): Promise<LicenseState> {
+    return this.refreshLicenseState();
+  }
+
+  async saveLicense(rawLicense: string): Promise<LicenseState> {
+    const normalized = rawLicense.trim();
+    if (normalized) {
+      this.app.secretStorage.setSecret(LICENSE_SECRET_ID, normalized);
+    } else {
+      this.app.secretStorage.setSecret(LICENSE_SECRET_ID, "");
+    }
+    return this.refreshLicenseState();
+  }
+
+  async clearLicense(): Promise<LicenseState> {
+    this.app.secretStorage.setSecret(LICENSE_SECRET_ID, "");
+    return this.refreshLicenseState();
+  }
+
+  private async ensureLicensed(showNotice: boolean): Promise<boolean> {
+    const state = await this.refreshLicenseState();
+    if (state.isValid) {
+      return true;
+    }
+
+    if (showNotice) {
+      new Notice(`GetNote Sync 未授权：${state.statusText}`);
+    }
+    return false;
+  }
+
+  private async refreshLicenseState(): Promise<LicenseState> {
+    const deviceId = this.getOrCreateDeviceId();
+    const rawLicense = normalizeLicenseValue(this.app.secretStorage.getSecret(LICENSE_SECRET_ID));
+    const state = await validateLicense(deviceId, rawLicense);
+    this.licenseState = state;
+    return state;
+  }
+
+  private getOrCreateDeviceId(): string {
+    const existing = normalizeLicenseValue(this.app.secretStorage.getSecret(DEVICE_ID_SECRET_ID));
+    if (existing) {
+      return existing;
+    }
+
+    const deviceId = createDeviceId();
+    this.app.secretStorage.setSecret(DEVICE_ID_SECRET_ID, deviceId);
+    return deviceId;
+  }
+
   private trimDetailCache(maxEntries = 200): void {
     while (this.detailCache.size > maxEntries) {
       const oldestKey = this.detailCache.keys().next().value;
@@ -934,10 +1025,67 @@ class GetNoteSyncSettingTab extends PluginSettingTab {
   }
 
   display(): void {
+    void this.renderAsync();
+  }
+
+  private async renderAsync(): Promise<void> {
     const { containerEl } = this;
     containerEl.empty();
+    const licenseState = await this.plugin.getLicenseState();
 
     containerEl.createEl("h2", { text: "GetNote Sync 设置" });
+
+    containerEl.createEl("h3", { text: "授权" });
+
+    new Setting(containerEl)
+      .setName("设备机器码")
+      .setDesc("把这串机器码发给你自己，用来生成授权码")
+      .addText((text) => {
+        text.setValue(licenseState.deviceId);
+        text.inputEl.readOnly = true;
+        text.inputEl.style.fontFamily = "var(--font-monospace)";
+        text.inputEl.style.fontSize = "12px";
+        text.inputEl.setAttr("spellcheck", "false");
+        text.inputEl.addEventListener("click", () => text.inputEl.select());
+      })
+      .addButton((button) =>
+        button.setButtonText("复制").onClick(async () => {
+          const copied = await copyToClipboard(licenseState.deviceId);
+          new Notice(copied ? "设备机器码已复制。" : "当前环境不支持自动复制，请手动复制设备机器码。");
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName("授权状态")
+      .setDesc(licenseState.isValid
+        ? `已激活${licenseState.expiresAt ? `，到期时间：${licenseState.expiresAt}` : ""}`
+        : licenseState.statusText);
+
+    new Setting(containerEl)
+      .setName("授权码")
+      .setDesc("填入你签发的授权码；一条授权码可以绑定多台设备，正式发码建议用仓库里的 scripts/issue-license.mjs")
+      .addText((text) =>
+        text
+          .setPlaceholder("gns1.payload.signature")
+          .setValue(licenseState.rawLicense ?? "")
+          .onChange(async (value) => {
+            await this.plugin.saveLicense(value);
+          }),
+      )
+      .addButton((button) =>
+        button.setButtonText("验证").setCta().onClick(async () => {
+          const nextState = await this.plugin.getLicenseState();
+          new Notice(nextState.isValid ? "GetNote Sync 授权有效。" : `授权无效：${nextState.statusText}`);
+          this.display();
+        }),
+      )
+      .addButton((button) =>
+        button.setButtonText("清空").onClick(async () => {
+          await this.plugin.clearLicense();
+          new Notice("GetNote Sync 授权码已清空。");
+          this.display();
+        }),
+      );
 
     new Setting(containerEl)
       .setName("Client ID")
@@ -1926,4 +2074,262 @@ function decrementNumericString(value: string): string {
 
   const decremented = digits.join("").replace(/^0+/, "");
   return decremented || "0";
+}
+
+function normalizeLicenseValue(value: string | null | undefined): string | null {
+  const normalized = value?.trim();
+  return normalized ? normalized : null;
+}
+
+function normalizeLicenseExpiry(value: string): string {
+  const normalized = value.trim();
+  if (!normalized || normalized.toLowerCase() === "never") {
+    return "never";
+  }
+
+  const parsed = moment(normalized, "YYYY-MM-DD", true);
+  return parsed.isValid() ? parsed.format("YYYY-MM-DD") : "never";
+}
+
+function createDeviceId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+
+  return `gn-${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`;
+}
+
+async function validateLicense(deviceId: string, rawLicense: string | null): Promise<LicenseState> {
+  if (!rawLicense) {
+    return {
+      deviceId,
+      rawLicense: null,
+      isValid: false,
+      statusText: "还没有填写授权码",
+      expiresAt: null,
+    };
+  }
+
+  const parts = rawLicense.split(".");
+  if (parts.length !== 3 || parts[0] !== LICENSE_PREFIX) {
+    return {
+      deviceId,
+      rawLicense,
+      isValid: false,
+      statusText: "授权码格式不正确",
+      expiresAt: null,
+    };
+  }
+
+  const signedPayload = parseSignedLicensePayload(parts[1]);
+  if (signedPayload) {
+    const signatureIsValid = await verifySignedLicense(parts[1], parts[2]);
+    if (!signatureIsValid) {
+      return {
+        deviceId,
+        rawLicense,
+        isValid: false,
+        statusText: "授权签名无效",
+        expiresAt: normalizeLicenseExpiry(signedPayload.exp),
+      };
+    }
+
+    const expiresAt = normalizeLicenseExpiry(signedPayload.exp);
+    const allowedDeviceIds = getSignedLicenseDeviceIds(signedPayload);
+    if (!signedPayload.unlimitedDevices && !allowedDeviceIds.includes(deviceId)) {
+      return {
+        deviceId,
+        rawLicense,
+        isValid: false,
+        statusText: "授权码和当前设备不匹配",
+        expiresAt: expiresAt === "never" ? null : expiresAt,
+      };
+    }
+
+    if (expiresAt !== "never" && moment(expiresAt, "YYYY-MM-DD", true).endOf("day").isBefore(moment())) {
+      return {
+        deviceId,
+        rawLicense,
+        isValid: false,
+        statusText: `授权已过期：${expiresAt}`,
+        expiresAt,
+      };
+    }
+
+    return {
+      deviceId,
+      rawLicense,
+      isValid: true,
+      statusText: expiresAt === "never" ? "授权有效" : `授权有效，至 ${expiresAt}`,
+      expiresAt: expiresAt === "never" ? null : expiresAt,
+    };
+  }
+
+  return validateLegacyLicense(deviceId, rawLicense, parts[1], parts[2]);
+}
+
+async function validateLegacyLicense(
+  deviceId: string,
+  rawLicense: string,
+  expiryPart: string,
+  checksumPart: string,
+): Promise<LicenseState> {
+  const expiresAt = normalizeLicenseExpiry(expiryPart);
+  if (expiresAt !== "never" && moment(expiresAt, "YYYY-MM-DD", true).endOf("day").isBefore(moment())) {
+    return {
+      deviceId,
+      rawLicense,
+      isValid: false,
+      statusText: `授权已过期：${expiresAt}`,
+      expiresAt,
+    };
+  }
+
+  const expectedChecksum = await createLegacyLicenseChecksum(deviceId, expiresAt);
+  if (checksumPart !== expectedChecksum) {
+    return {
+      deviceId,
+      rawLicense,
+      isValid: false,
+      statusText: "授权码格式不正确或签名无效",
+      expiresAt: expiresAt === "never" ? null : expiresAt,
+    };
+  }
+
+  return {
+    deviceId,
+    rawLicense,
+    isValid: true,
+    statusText: expiresAt === "never" ? "测试授权有效" : `测试授权有效，至 ${expiresAt}`,
+    expiresAt: expiresAt === "never" ? null : expiresAt,
+  };
+}
+
+async function createLegacyLicenseChecksum(deviceId: string, expiresAt: string): Promise<string> {
+  const payload = `${deviceId}:${expiresAt}:${LEGACY_LICENSE_SALT}`;
+  const hash = await sha256Hex(payload);
+  return hash.slice(0, LEGACY_LICENSE_CHECKSUM_LENGTH);
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const bytes = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((item) => item.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function parseSignedLicensePayload(payloadBase64Url: string): SignedLicensePayload | null {
+  try {
+    const payloadText = decodeBase64UrlToString(payloadBase64Url);
+    const payload = JSON.parse(payloadText) as SignedLicensePayload;
+    if (!payload || typeof payload.exp !== "string") {
+      return null;
+    }
+
+    const deviceIds = getSignedLicenseDeviceIds(payload);
+    if (!payload.unlimitedDevices && deviceIds.length === 0) {
+      return null;
+    }
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+function getSignedLicenseDeviceIds(payload: SignedLicensePayload): string[] {
+  const deviceIds = Array.isArray(payload.deviceIds)
+    ? payload.deviceIds.map((item) => String(item).trim()).filter(Boolean)
+    : [];
+  const legacyDeviceId = typeof payload.deviceId === "string" ? payload.deviceId.trim() : "";
+  return uniqueStrings([...deviceIds, legacyDeviceId].filter(Boolean));
+}
+
+async function verifySignedLicense(payloadBase64Url: string, signatureBase64Url: string): Promise<boolean> {
+  try {
+    const publicKey = await importLicensePublicKey();
+    const signature = base64UrlToArrayBuffer(signatureBase64Url);
+    const signedBytes = new TextEncoder().encode(`${LICENSE_PREFIX}.${payloadBase64Url}`);
+    return await crypto.subtle.verify(
+      "RSASSA-PKCS1-v1_5",
+      publicKey,
+      signature,
+      signedBytes,
+    );
+  } catch {
+    return false;
+  }
+}
+
+let licensePublicKeyPromise: Promise<CryptoKey> | null = null;
+
+async function importLicensePublicKey(): Promise<CryptoKey> {
+  if (!licensePublicKeyPromise) {
+    const binaryDer = pemToArrayBuffer(LICENSE_PUBLIC_KEY_PEM);
+    licensePublicKeyPromise = crypto.subtle.importKey(
+      "spki",
+      binaryDer,
+      {
+        name: "RSASSA-PKCS1-v1_5",
+        hash: "SHA-256",
+      },
+      false,
+      ["verify"],
+    );
+  }
+
+  return licensePublicKeyPromise;
+}
+
+function pemToArrayBuffer(pem: string): ArrayBuffer {
+  const base64 = pem
+    .replace(/-----BEGIN PUBLIC KEY-----/g, "")
+    .replace(/-----END PUBLIC KEY-----/g, "")
+    .replace(/\s+/g, "");
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes.buffer;
+}
+
+function decodeBase64UrlToString(value: string): string {
+  const bytes = base64UrlToUint8Array(value);
+  return new TextDecoder().decode(bytes);
+}
+
+function base64UrlToArrayBuffer(value: string): ArrayBuffer {
+  const bytes = base64UrlToUint8Array(value);
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+  return buffer;
+}
+
+function base64UrlToUint8Array(value: string): Uint8Array {
+  const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padding = "=".repeat((4 - (base64.length % 4)) % 4);
+  const binary = atob(base64 + padding);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+async function copyToClipboard(value: string): Promise<boolean> {
+  if (!value) {
+    return false;
+  }
+
+  if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
+    return false;
+  }
+
+  try {
+    await navigator.clipboard.writeText(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
