@@ -1,6 +1,6 @@
 {
   "name": "obsidian-getnote-sync",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Obsidian plugin for importing Get Note transcripts into a vault.",
   "main": "main.js",
   "scripts": {
