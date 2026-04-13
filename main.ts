@@ -507,7 +507,6 @@ export default class GetNoteSyncPlugin extends Plugin {
     topicTags: string[],
   ) {
     await this.ensureTopicSection(currentPath, topicTags);
-    await this.ensureTopicIndexPages(currentPath, topicTags, this.isSproutReport(note));
 
     if (this.isSproutReport(note) && relatedSourcePath) {
       await this.ensureSproutBacklink(currentPath, relatedSourcePath, topicTags);
@@ -632,7 +631,7 @@ export default class GetNoteSyncPlugin extends Plugin {
     }
 
     const content = await this.app.vault.cachedRead(file);
-    const topicsSection = topicTags.length > 0 ? renderTopicLinks(topicTags) : "";
+    const topicsSection = topicTags.length > 0 ? renderTopicList(topicTags) : "";
     let updated = updateNamedSection(content, "来源笔记", `- [[${pathToWikiTarget(sourcePath)}]]`);
 
     if (topicsSection) {
@@ -691,57 +690,9 @@ export default class GetNoteSyncPlugin extends Plugin {
     const finalTopics = frontmatterTopics.length > 0 ? frontmatterTopics : topicTags;
     const tags = readFrontmatterList(content, "tags");
     const heading = tags.includes("sprout-report") ? "主题" : "讨论主题";
-    const updated = updateNamedSection(content, heading, renderTopicLinks(finalTopics));
+    const updated = updateNamedSection(content, heading, renderTopicList(finalTopics));
     if (updated !== content) {
       await this.app.vault.modify(file, updated);
-    }
-  }
-
-  private async ensureTopicIndexPages(path: string, topicTags: string[], isSprout: boolean) {
-    const uniqueTopics = uniqueStrings(topicTags);
-    if (uniqueTopics.length === 0) {
-      return;
-    }
-
-    await this.ensureFolder(this.settings.topicFolder);
-
-    for (const topic of uniqueTopics) {
-      const topicPath = normalizePath(`${this.settings.topicFolder}/${sanitizeFileName(topic)}.md`);
-      const existing = this.app.vault.getAbstractFileByPath(topicPath);
-      const entry = `- [[${pathToWikiTarget(path)}]]`;
-      const heading = isSprout ? "发芽报告" : "核心笔记";
-
-      if (!(existing instanceof TFile)) {
-        const frontmatter = [
-          "---",
-          'type: "topic-index"',
-          `topic: "${escapeYamlString(topic)}"`,
-          "tags:",
-          "  - topic-index",
-          "---",
-        ].join("\n");
-
-        const sections = [
-          `# ${topic}`,
-          "## 核心笔记",
-          isSprout ? "" : entry,
-          "## 发芽报告",
-          isSprout ? entry : "",
-        ];
-
-        await this.app.vault.create(
-          topicPath,
-          `${frontmatter}\n\n${sections.map((section) => section.trimEnd()).join("\n\n").trim()}\n`,
-        );
-        continue;
-      }
-
-      const content = await this.app.vault.cachedRead(existing);
-      const normalized = ensureTopicIndexScaffold(content, topic);
-      const updated = ensureSectionLink(normalized, heading, entry);
-      if (updated !== content) {
-        await this.app.vault.modify(existing, updated);
-      }
     }
   }
 
@@ -834,7 +785,7 @@ export default class GetNoteSyncPlugin extends Plugin {
         !structuredSections.hasStructuredSections && cleanedBody ? `## 全文\n\n${cleanedBody}` : undefined,
         extractedChapters ? `## 章节概要\n\n${extractedChapters}` : undefined,
         extractedQuotes ? `## 金句\n\n${extractedQuotes}` : undefined,
-        topicTags.length > 0 ? `## 主题\n\n${renderTopicLinks(topicTags)}` : undefined,
+        topicTags.length > 0 ? `## 主题\n\n${renderTopicList(topicTags)}` : undefined,
         this.settings.includeRawJson ? "## 原始 JSON\n\n```json\n" + rawJson + "\n```" : undefined,
       ]
       : [
@@ -842,7 +793,7 @@ export default class GetNoteSyncPlugin extends Plugin {
         createdAt ? `> 导入时间：${createdAt}` : undefined,
         renderMeetingOverview(createdAt, topicTags),
         finalSummary ? `## 会议摘要\n\n${finalSummary}` : undefined,
-        topicTags.length > 0 ? `## 讨论主题\n\n${renderTopicLinks(topicTags)}` : undefined,
+        topicTags.length > 0 ? `## 讨论主题\n\n${renderTopicList(topicTags)}` : undefined,
         `## 行动项\n\n${normalizeTodoSection(extractedTodos ?? "无")}`,
         extractedChapters
           ? `## 讨论过程\n\n${extractedChapters}`
@@ -1179,8 +1130,8 @@ class GetNoteSyncSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("主题索引文件夹")
-      .setDesc("按主题自动生成索引页，连接核心笔记和发芽报告")
+      .setName("主题文件夹（已停用）")
+      .setDesc("主题索引页已关闭；这里仅保留兼容旧配置，不会再自动生成额外笔记")
       .addText((text) =>
         text
           .setPlaceholder(DEFAULT_SETTINGS.topicFolder)
@@ -1752,8 +1703,8 @@ function pathToWikiTarget(path: string): string {
   return normalizePath(path).replace(/\.md$/i, "");
 }
 
-function renderTopicLinks(topicTags: string[]): string {
-  return uniqueStrings(topicTags).map((tag) => `- [[主题/${tag}|${tag}]]`).join("\n");
+function renderTopicList(topicTags: string[]): string {
+  return uniqueStrings(topicTags).map((tag) => `- ${tag}`).join("\n");
 }
 
 function readFrontmatterValue(content: string, key: string): string | null {
