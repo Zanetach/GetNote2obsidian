@@ -74,6 +74,9 @@ npm run build
 
 ## License 授权
 
+- 本项目采用个人授权方式分发，具体条款见仓库根目录的 `LICENSE.txt`
+- GitHub Release 附件会包含 `LICENSE.txt`
+
 - 插件会在每台设备本地生成一个 `deviceId`，并保存在 Obsidian 的 `SecretStorage`
 - 这个 `deviceId` 不写入 vault 同步文件，更适合移动端和多设备场景
 - 设置页会显示当前设备机器码和授权状态

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.4 - 2026-04-14
+
+### Changes
+- 新增个人授权版 `LICENSE.txt`
+- Release 附件中加入 `LICENSE.txt`
+- 项目元数据改为引用自定义授权文件
+
 ## 1.0.3 - 2026-04-14
 
 ### Fixes
