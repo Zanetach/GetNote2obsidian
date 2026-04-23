@@ -1,6 +1,6 @@
 {
   "name": "obsidian-getnote-sync",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Obsidian plugin for importing Get Note transcripts into a vault.",
   "main": "main.js",
   "scripts": {
@@ -14,7 +14,7 @@
     "biji"
   ],
   "author": "Codex",
-  "license": "SEE LICENSE IN LICENSE.txt",
+  "license": "MIT",
   "devDependencies": {
     "@types/node": "^22.15.3",
     "builtin-modules": "^5.0.0",
